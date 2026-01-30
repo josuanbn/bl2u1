@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bambu to Snapmaker U1 Converter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body class="bg-slate-900 text-slate-200 font-sans min-h-screen flex flex-col items-center py-10">
+
+    <div class="w-full max-w-2xl bg-slate-800 p-8 rounded-xl shadow-2xl border border-slate-700">
+        <h1 class="text-3xl font-bold text-center mb-2 text-cyan-400">
+            <i class="fa-solid fa-shuttle-space mr-2"></i> Bambu <i class="fa-solid fa-arrow-right mx-2 text-sm text-gray-500"></i> Snapmaker U1
+        </h1>
+        <p class="text-center text-slate-400 mb-8">
+            Convert .3mf projects, keeping color painting while changing the machine.
+            <button id="info-btn" class="ml-1 text-cyan-400 hover:text-cyan-300 transition-colors">
+                <i class="fa-solid fa-circle-info"></i>
+            </button>
+        </p>
+
+        <!-- Info Modal -->
+        <div id="info-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div class="bg-slate-800 border border-slate-600 rounded-xl p-6 max-w-md mx-4 shadow-2xl">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-bold text-cyan-400"><i class="fa-solid fa-circle-info mr-2"></i>What does this tool do?</h3>
+                    <button id="close-modal" class="text-slate-400 hover:text-white transition-colors">
+                        <i class="fa-solid fa-xmark text-xl"></i>
+                    </button>
+                </div>
+                <ul class="text-slate-300 text-sm space-y-2">
+                    <li><i class="fa-solid fa-check text-green-400 mr-2"></i>Converts Bambu Lab .3mf projects to Snapmaker U1</li>
+                    <li><i class="fa-solid fa-check text-green-400 mr-2"></i>Applies the 0.20mm Standard print profile</li>
+                    <li><i class="fa-solid fa-check text-green-400 mr-2"></i>Remaps colors and filament types to U1 compatible profiles</li>
+                    <li><i class="fa-solid fa-check text-green-400 mr-2"></i>Enables Tree Supports (auto) if the original model has supports enabled</li>
+                </ul>
+                <p class="text-slate-500 text-xs mt-4">Note: The converted file should be opened in Snapmaker Orca for final slicing.</p>
+            </div>
+        </div>
+
+        <div id="step1" class="transition-all">
+            <div class="flex items-center justify-center w-full">
+                <label for="file-upload" id="drop-zone" class="flex flex-col items-center justify-center w-full h-64 border-2 border-slate-600 border-dashed rounded-lg cursor-pointer bg-slate-700 hover:bg-slate-600 hover:border-cyan-500 transition-colors">
+                    <div class="flex flex-col items-center justify-center pt-5 pb-6">
+                        <i class="fa-solid fa-cloud-arrow-up text-4xl mb-3 text-cyan-400"></i>
+                        <p class="mb-2 text-sm text-gray-300"><span class="font-semibold">Click to upload</span> or drag and drop the Bambu file</p>
+                        <p class="text-xs text-gray-500">Only .3mf files</p>
+                    </div>
+                    <input id="file-upload" type="file" class="hidden" accept=".3mf" />
+                </label>
+            </div>
+        </div>
+
+        <div id="step2" class="hidden mt-6">
+            <h3 class="text-xl font-semibold mb-4 border-b border-slate-600 pb-2">U1 Filament Configuration</h3>
+            <p class="text-sm text-slate-400 mb-4">I have detected these filaments. How do you want to map them to the U1?</p>
+            
+            <div id="filament-list" class="space-y-4">
+            </div>
+
+            <div class="flex gap-3 mt-6">
+                <button id="btn-convert" class="flex-1 bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-3 px-4 rounded transition-colors flex justify-center items-center">
+                    <span>Convert and Download</span>
+                    <i class="fa-solid fa-bolt ml-2"></i>
+                </button>
+                <button id="btn-new" class="bg-slate-600 hover:bg-slate-500 text-white font-bold py-3 px-4 rounded transition-colors flex justify-center items-center">
+                    <i class="fa-solid fa-rotate-right mr-2"></i>
+                    <span>New</span>
+                </button>
+            </div>
+        </div>
+
+        <div id="loading" class="hidden mt-6 text-center">
+            <i class="fa-solid fa-circle-notch fa-spin text-4xl text-cyan-400"></i>
+            <p class="mt-2 text-slate-400">Processing geometry...</p>
+        </div>
+    </div>
+
+    <a href="https://buymeacoffee.com/josuanbn" target="_blank" rel="noopener noreferrer"
+       class="mt-6 text-slate-400 hover:text-yellow-400 transition-colors flex items-center gap-2 text-sm">
+        <i class="fa-solid fa-mug-hot"></i>
+        <span>Buy me a coffee</span>
+    </a>
+
+    <script>
+        let currentSessionId = "";
+        const dropZone = document.getElementById('drop-zone');
+        const fileUpload = document.getElementById('file-upload');
+
+        // Drag and drop listeners
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('border-cyan-500', 'bg-slate-600');
+        });
+
+        dropZone.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('border-cyan-500', 'bg-slate-600');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('border-cyan-500', 'bg-slate-600');
+            const file = e.dataTransfer.files[0];
+            handleFile(file);
+        });
+
+        fileUpload.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            handleFile(file);
+        });
+
+        async function handleFile(file) {
+            if (!file) return;
+
+            // Show loading
+            document.getElementById('step1').classList.add('opacity-50', 'pointer-events-none');
+            document.getElementById('loading').classList.remove('hidden');
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('/analyze', { method: 'POST', body: formData });
+                const data = await response.json();
+
+                if (!response.ok) throw new Error(data.error);
+
+                currentSessionId = data.session_id;
+                renderFilaments(data.filaments);
+
+                // Move to step 2
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('step1').classList.add('hidden');
+                document.getElementById('step2').classList.remove('hidden');
+
+            } catch (err) {
+                alert("Error: " + err.message);
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('step1').classList.remove('opacity-50', 'pointer-events-none');
+            }
+        }
+
+        // Available filament types (loaded from server)
+        let availableFilamentTypes = [];
+
+        // Load available filament types from server
+        async function loadFilamentTypes() {
+            try {
+                const response = await fetch('/filament-types');
+                availableFilamentTypes = await response.json();
+            } catch (e) {
+                console.error('Could not load filament types:', e);
+                // Fallback
+                availableFilamentTypes = [
+                    {type: 'PLA', settings_id: 'Snapmaker PLA SnapSpeed @U1'},
+                    {type: 'PETG-HF', settings_id: 'Snapmaker PETG HF'},
+                    {type: 'ABS', settings_id: 'Generic ABS'},
+                    {type: 'TPU', settings_id: 'Generic TPU'}
+                ];
+            }
+        }
+
+        // Map original filament type to available types
+        function mapFilamentType(originalType) {
+            if (!originalType || availableFilamentTypes.length === 0) {
+                return availableFilamentTypes[0]?.type || 'PLA';
+            }
+            const upper = originalType.toUpperCase();
+            // Try to find a matching type
+            for (const ft of availableFilamentTypes) {
+                if (upper.includes(ft.type.toUpperCase().replace('-HF', '').replace('-', ''))) {
+                    return ft.type;
+                }
+            }
+            // Default to first available (PLA)
+            return availableFilamentTypes[0]?.type || 'PLA';
+        }
+
+        function renderFilaments(filaments) {
+            const container = document.getElementById('filament-list');
+            container.innerHTML = "";
+
+            filaments.forEach((fil, index) => {
+                const mappedType = mapFilamentType(fil.type);
+
+                // Build options from available types
+                let optionsHtml = '';
+                for (const ft of availableFilamentTypes) {
+                    const selected = ft.type === mappedType ? 'selected' : '';
+                    optionsHtml += `<option value="${ft.type}" ${selected}>${ft.type}</option>`;
+                }
+
+                const html = `
+                <div class="bg-slate-700 p-4 rounded flex items-center justify-between" data-id="${fil.id}">
+                    <div class="flex items-center gap-3">
+                        <div class="w-8 h-8 rounded-full border border-gray-500 shadow" style="background-color: ${fil.color}"></div>
+                        <div>
+                            <p class="font-bold text-white">Filament ${index + 1}</p>
+                            <p class="text-xs text-gray-400">Original: ${fil.type || 'Unknown'}</p>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-2">
+                        <i class="fa-solid fa-arrow-right text-gray-500"></i>
+                    </div>
+
+                    <div class="flex gap-2">
+                        <input type="color" class="h-10 w-14 bg-slate-600 border border-slate-500 rounded cursor-pointer"
+                               value="${fil.color}" id="col-${fil.id}">
+                        <select class="bg-slate-600 text-white text-sm rounded border border-slate-500 p-2" id="typ-${fil.id}">
+                            ${optionsHtml}
+                        </select>
+                    </div>
+                </div>`;
+                container.innerHTML += html;
+            });
+        }
+
+        // Load filament types on page load
+        loadFilamentTypes();
+
+        // New file button - reset to step 1
+        document.getElementById('btn-new').addEventListener('click', () => {
+            document.getElementById('step2').classList.add('hidden');
+            document.getElementById('step1').classList.remove('hidden', 'opacity-50', 'pointer-events-none');
+            document.getElementById('filament-list').innerHTML = '';
+            document.getElementById('file-upload').value = '';
+            currentSessionId = '';
+        });
+
+        // Info modal
+        const infoModal = document.getElementById('info-modal');
+        document.getElementById('info-btn').addEventListener('click', () => {
+            infoModal.classList.remove('hidden');
+        });
+        document.getElementById('close-modal').addEventListener('click', () => {
+            infoModal.classList.add('hidden');
+        });
+        infoModal.addEventListener('click', (e) => {
+            if (e.target === infoModal) infoModal.classList.add('hidden');
+        });
+
+        document.getElementById('btn-convert').addEventListener('click', async () => {
+            const inputs = document.querySelectorAll('#filament-list > div');
+            let colors = {};
+
+            inputs.forEach(div => {
+                const id = div.getAttribute('data-id');
+                const color = document.getElementById(`col-${id}`).value;
+                const type = document.getElementById(`typ-${id}`).value;
+                colors[id] = { color: color, type: type };
+            });
+
+            try {
+                const res = await fetch('/convert', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ session_id: currentSessionId, colors: colors })
+                });
+                const data = await res.json();
+                
+                if (data.download_url) {
+                    window.location.href = data.download_url;
+                } else {
+                    alert("Conversion Error");
+                }
+            } catch (e) {
+                alert("Connection Error");
+            }
+        });
+    </script>
+</body>
+</html>
