@@ -7,6 +7,7 @@ import uuid
 import time
 import xml.etree.ElementTree as ET
 from flask import Flask, render_template, request, send_file, jsonify
+from werkzeug.exceptions import RequestEntityTooLarge
 
 app = Flask(__name__)
 
@@ -15,6 +16,7 @@ UPLOAD_FOLDER = 'uploads'
 TEMPLATE_FILE = 'u1_template.3mf'  # Your empty U1 .3mf file
 FILAMENT_PROFILES_FILE = 'filament_types.3mf'  # Reference file with available filament profiles
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB (must match Apache LimitRequestBody)
 
 # Ensure folders exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -119,6 +121,10 @@ def parse_bambu_filaments(filepath):
         print(f"Error parsing filaments: {e}")
     return filaments
 
+@app.errorhandler(RequestEntityTooLarge)
+def handle_file_too_large(e):
+    return jsonify({'error': 'File is too large. Maximum size is 200MB.'}), 413
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -148,10 +154,6 @@ def analyze():
 
     # Analyze colors
     filaments = parse_bambu_filaments(filepath)
-
-    if len(filaments) > 4:
-        os.remove(filepath)  # Clean up
-        return jsonify({'error': f'Too many colors ({len(filaments)}). The U1 supports a maximum of 4.'}), 400
 
     return jsonify({
         'session_id': session_id,
@@ -301,17 +303,13 @@ def convert():
                 new_filament_colors = []
                 new_filament_types = []
 
-                # Iterate through original filaments in order
+                # Iterate through original filaments in order, only include selected ones
                 for orig_fil in original_filaments:
                     orig_id = orig_fil['id']
-                    if orig_id in user_colors:
-                        # User provided color/type for this filament
-                        color = user_colors[orig_id]['color']
-                        fil_type = user_colors[orig_id]['type']
-                    else:
-                        # Keep original color/type
-                        color = orig_fil['color']
-                        fil_type = orig_fil['type']
+                    if orig_id not in user_colors:
+                        continue  # Skip filaments the user didn't select
+                    color = user_colors[orig_id]['color']
+                    fil_type = user_colors[orig_id]['type']
 
                     # Ensure color format is correct (with alpha for compatibility)
                     if len(color) == 7:  # #RRGGBB
