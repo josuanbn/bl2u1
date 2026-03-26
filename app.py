@@ -45,6 +45,7 @@ def _sanitize_download_name(name: str) -> str:
     cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', name).strip()
     return cleaned or 'converted'
 
+
 # ---------------------------------------------------------------------------
 # Filament profiles (loaded once at startup)
 # ---------------------------------------------------------------------------
@@ -84,10 +85,14 @@ def cleanup_old_files() -> None:
 
 def _schedule_cleanup(interval: int = 3600) -> None:
     cleanup_old_files()
+    # Also purge stale entries from _session_names
     for sid in list(_session_names):
-        if _safe_path(f'{sid}_input.3mf') is None or not os.path.exists(_safe_path(f'{sid}_input.3mf')):
+        path = _safe_path(f'{sid}_input.3mf')
+        if path is None or not os.path.exists(path):
             _session_names.pop(sid, None)
-    Timer(interval, _schedule_cleanup, [interval]).start()
+    t = Timer(interval, _schedule_cleanup, [interval])
+    t.daemon = True          # don't prevent process exit
+    t.start()
 
 
 _schedule_cleanup()
@@ -369,7 +374,10 @@ def convert():
                 else:
                     zout.writestr(item, zin.read(item.filename))
 
-        return jsonify({'download_url': f'/download/{session_id}_U1_Ready.3mf'})
+        return jsonify({
+            'download_url': f'/download/{session_id}_U1_Ready.3mf',
+            'download_name': f'{_session_names.get(session_id, "converted")}-U1.3mf',
+        })
 
     except Exception as e:
         logger.error("Conversion error [%s]: %s", session_id, e, exc_info=True)
@@ -389,6 +397,7 @@ def download_file(filename: str):
     filepath = _safe_path(filename)
     if filepath is None or not os.path.exists(filepath):
         return jsonify({'error': 'File not found'}), 404
+    # Use original filename if available
     session_id    = filename[:32]
     original_name = _session_names.get(session_id, 'converted')
     return send_file(filepath, as_attachment=True, download_name=f'{original_name}-U1.3mf')

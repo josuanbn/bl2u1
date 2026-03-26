@@ -96,10 +96,16 @@
             </div>
         </div>
 
-        <!-- Analyze loading -->
-        <div id="loading" class="hidden mt-6 text-center">
-            <i class="fa-solid fa-circle-notch fa-spin text-4xl text-cyan-400"></i>
-            <p class="mt-2 text-slate-400">Processing geometry&hellip;</p>
+        <!-- Upload progress -->
+        <div id="loading" class="hidden mt-6">
+            <div class="flex items-center gap-3 mb-2">
+                <i id="loading-icon" class="fa-solid fa-cloud-arrow-up text-xl text-cyan-400"></i>
+                <p id="loading-text" class="text-slate-400">Uploading file...</p>
+                <span id="loading-percent" class="ml-auto text-sm font-mono text-cyan-400">0%</span>
+            </div>
+            <div class="w-full bg-slate-700 rounded-full h-3 overflow-hidden">
+                <div id="progress-bar" class="bg-cyan-500 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
+            </div>
         </div>
     </div>
 
@@ -142,6 +148,16 @@
         document.getElementById('error-dismiss').addEventListener('click', hideError);
 
         // ----------------------------------------------------------------
+        // Upload progress helpers
+        // ----------------------------------------------------------------
+        function setProgress(percent, text, icon) {
+            document.getElementById('progress-bar').style.width = percent + '%';
+            document.getElementById('loading-percent').textContent = Math.round(percent) + '%';
+            if (text) document.getElementById('loading-text').textContent = text;
+            if (icon) document.getElementById('loading-icon').className = icon;
+        }
+
+        // ----------------------------------------------------------------
         // Convert button loading state
         // ----------------------------------------------------------------
         function setConverting(active) {
@@ -174,7 +190,7 @@
         });
         fileUpload.addEventListener('change', (e) => handleFile(e.target.files[0]));
 
-        async function handleFile(file) {
+        function handleFile(file) {
             if (!file) return;
             hideError();
 
@@ -189,29 +205,52 @@
 
             document.getElementById('step1').classList.add('opacity-50', 'pointer-events-none');
             document.getElementById('loading').classList.remove('hidden');
+            setProgress(0, 'Uploading file...', 'fa-solid fa-cloud-arrow-up text-xl text-cyan-400');
 
             const formData = new FormData();
             formData.append('file', file);
 
-            try {
-                const res  = await fetch('/analyze', { method: 'POST', body: formData });
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.error || 'Upload failed');
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/analyze');
 
-                currentSessionId = data.session_id;
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const percent = (e.loaded / e.total) * 100;
+                    setProgress(percent, `Uploading\u2026 (${(e.loaded / 1024 / 1024).toFixed(1)} / ${(e.total / 1024 / 1024).toFixed(1)} MB)`);
+                }
+            });
 
-                // Ensure filament types are loaded before rendering
-                if (availableFilamentTypes.length === 0) await filamentTypesPromise;
-                renderFilaments(data.filaments);
+            xhr.upload.addEventListener('load', () => {
+                setProgress(100, 'Analyzing filaments\u2026', 'fa-solid fa-circle-notch fa-spin text-xl text-cyan-400');
+            });
 
-                document.getElementById('loading').classList.add('hidden');
-                document.getElementById('step1').classList.add('hidden');
-                document.getElementById('step2').classList.remove('hidden');
-            } catch (err) {
-                showError(err.message || 'Upload failed. Please try again.');
+            xhr.addEventListener('load', async () => {
+                try {
+                    const data = JSON.parse(xhr.responseText);
+                    if (xhr.status >= 400) throw new Error(data.error || 'Upload failed');
+
+                    currentSessionId = data.session_id;
+
+                    if (availableFilamentTypes.length === 0) await filamentTypesPromise;
+                    renderFilaments(data.filaments);
+
+                    document.getElementById('loading').classList.add('hidden');
+                    document.getElementById('step1').classList.add('hidden');
+                    document.getElementById('step2').classList.remove('hidden');
+                } catch (err) {
+                    showError(err.message || 'Upload failed. Please try again.');
+                    document.getElementById('loading').classList.add('hidden');
+                    document.getElementById('step1').classList.remove('opacity-50', 'pointer-events-none');
+                }
+            });
+
+            xhr.addEventListener('error', () => {
+                showError('Connection error. Please try again.');
                 document.getElementById('loading').classList.add('hidden');
                 document.getElementById('step1').classList.remove('opacity-50', 'pointer-events-none');
-            }
+            });
+
+            xhr.send(formData);
         }
 
         // ----------------------------------------------------------------
@@ -399,8 +438,13 @@
                     throw new Error(data.error || 'Conversion failed');
                 }
 
-                // Trigger download, then restore button so user can convert again
-                window.location.href = data.download_url;
+                // Trigger download with original filename via hidden link
+                const a = document.createElement('a');
+                a.href = data.download_url;
+                if (data.download_name) a.download = data.download_name;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
                 setConverting(false);
             } catch (err) {
                 showError(err.message || 'Connection error. Please try again.');

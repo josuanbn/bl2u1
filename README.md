@@ -11,7 +11,9 @@ A web-based tool to convert Bambu Lab .3mf projects to Snapmaker U1 format, pres
 - Applies the 0.20mm Standard print profile for U1
 - Remaps filament types to U1 compatible profiles
 - Automatically enables Tree Supports (auto) if the original model has supports enabled
-- Supports up to 4 filaments/colors
+- Supports files with more than 4 filaments (select which ones to keep for the U1)
+- Real-time upload progress bar
+- Downloaded file keeps the original name (e.g. `my_model-U1.3mf`)
 - Simple drag & drop interface
 - No installation required (web-based)
 
@@ -48,7 +50,7 @@ The application will be available at `http://localhost:8080`
 ### Project Structure
 
 ```
-bambu-to-u1-web/
+bl2u1/
 ├── app.py                    # Flask backend
 ├── templates/
 │   └── index.html            # Frontend interface
@@ -82,7 +84,7 @@ Uploaded files are automatically deleted after 8 hours to save disk space.
 
 ## Limitations
 
-- Maximum 4 filaments/colors (U1 hardware limitation)
+- Maximum 4 filaments/colors per print (U1 hardware limitation), but files with more filaments are supported via selection
 - The converted file must be sliced in Snapmaker Orca before printing
 - Some advanced Bambu-specific features may not transfer
 
