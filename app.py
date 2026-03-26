@@ -85,13 +85,14 @@ def cleanup_old_files() -> None:
 
 def _schedule_cleanup(interval: int = 3600) -> None:
     cleanup_old_files()
+    # Also purge stale entries from _session_names
     with _session_names_lock:
         for sid in list(_session_names):
             p = _safe_path(f'{sid}_input.3mf')
             if p is None or not os.path.exists(p):
                 _session_names.pop(sid, None)
     t = Timer(interval, _schedule_cleanup, [interval])
-    t.daemon = True
+    t.daemon = True          # don't prevent process exit
     t.start()
 
 
@@ -406,6 +407,7 @@ def download_file(filename: str):
     filepath = _safe_path(filename)
     if filepath is None or not os.path.exists(filepath):
         return jsonify({'error': 'File not found'}), 404
+    # Use original filename if available
     session_id = filename[:32]
     with _session_names_lock:
         original_name = _session_names.get(session_id, 'converted')
