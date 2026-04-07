@@ -136,6 +136,18 @@
         const convertLabel = document.getElementById('convert-label');
 
         // ----------------------------------------------------------------
+        // HTML escaping — prevents XSS when injecting untrusted text into innerHTML
+        // ----------------------------------------------------------------
+        function escapeHtml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        // ----------------------------------------------------------------
         // Error banner
         // ----------------------------------------------------------------
         function showError(msg) {
@@ -324,11 +336,11 @@
             filaments.forEach((fil, index) => {
                 const mappedType = mapFilamentType(fil.type);
                 const options = availableFilamentTypes.map(ft =>
-                    `<option value="${ft.type}"${ft.type === mappedType ? ' selected' : ''}>${ft.type}</option>`
+                    `<option value="${escapeHtml(ft.type)}"${ft.type === mappedType ? ' selected' : ''}>${escapeHtml(ft.type)}</option>`
                 ).join('');
 
                 const checkboxHtml = needsSelection
-                    ? `<input type="checkbox" class="filament-check w-5 h-5 rounded border-slate-500 bg-slate-600 text-cyan-500 focus:ring-cyan-500 cursor-pointer flex-shrink-0" data-fil-id="${fil.id}" aria-label="Select filament ${index + 1}">`
+                    ? `<input type="checkbox" class="filament-check w-5 h-5 rounded border-slate-500 bg-slate-600 text-cyan-500 focus:ring-cyan-500 cursor-pointer flex-shrink-0" data-fil-id="${escapeHtml(fil.id)}" aria-label="Select filament ${index + 1}">`
                     : '';
 
                 const row = document.createElement('div');
@@ -338,20 +350,20 @@
                     ${checkboxHtml}
                     <div class="flex items-center gap-3 min-w-0 flex-1">
                         <div class="w-8 h-8 rounded-full border border-gray-500 shadow flex-shrink-0"
-                             style="background-color: ${fil.color}"></div>
+                             style="background-color: ${escapeHtml(fil.color)}"></div>
                         <div class="min-w-0">
                             <p class="font-bold text-white">Filament ${index + 1}</p>
-                            <p class="text-xs text-gray-400">Original: ${fil.type || 'Unknown'}</p>
+                            <p class="text-xs text-gray-400">Original: ${escapeHtml(fil.type || 'Unknown')}</p>
                         </div>
                     </div>
                     <i class="fa-solid fa-arrow-right text-gray-500 flex-shrink-0"></i>
                     <div class="flex gap-2 flex-shrink-0">
                         <input type="color"
                                class="h-10 w-14 bg-slate-600 border border-slate-500 rounded cursor-pointer"
-                               value="${fil.color}" id="col-${fil.id}"
+                               value="${escapeHtml(fil.color)}" id="col-${escapeHtml(fil.id)}"
                                aria-label="Color for filament ${index + 1}">
                         <select class="bg-slate-600 text-white text-sm rounded border border-slate-500 p-2"
-                                id="typ-${fil.id}"
+                                id="typ-${escapeHtml(fil.id)}"
                                 aria-label="Type for filament ${index + 1}">
                             ${options}
                         </select>
@@ -438,7 +450,7 @@
                     throw new Error(data.error || 'Conversion failed');
                 }
 
-                // Trigger download with original filename via hidden link
+                // Trigger download via hidden anchor to preserve filename and avoid page navigation
                 const a = document.createElement('a');
                 a.href = data.download_url;
                 if (data.download_name) a.download = data.download_name;

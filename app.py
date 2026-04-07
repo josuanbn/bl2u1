@@ -7,8 +7,7 @@ import time
 import logging
 import posixpath
 import xml.etree.ElementTree as ET
-from threading import Timer
-from werkzeug.utils import secure_filename as _werkzeug_secure
+from threading import Timer, Lock
 from flask import Flask, render_template, request, send_file, jsonify
 from werkzeug.exceptions import RequestEntityTooLarge
 
@@ -37,8 +36,15 @@ except OSError as e:
 _SESSION_RE = re.compile(r'^[0-9a-f]{32}$')
 _COLOR_RE   = re.compile(r'^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$')
 
-# Maps session_id -> original filename (without .3mf extension)
+# Maps session_id -> original filename stem (for download naming)
 _session_names: dict[str, str] = {}
+_session_names_lock = Lock()
+
+
+def _sanitize_download_name(name: str) -> str:
+    """Remove characters invalid in filenames while preserving non-ASCII."""
+    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', name).strip()
+    return cleaned or 'converted'
 
 # ---------------------------------------------------------------------------
 # Filament profiles (loaded once at startup)
@@ -80,10 +86,11 @@ def cleanup_old_files() -> None:
 def _schedule_cleanup(interval: int = 3600) -> None:
     cleanup_old_files()
     # Also purge stale entries from _session_names
-    for name in list(_session_names):
-        path = _safe_path(f'{name}_input.3mf')
-        if path is None or not os.path.exists(path):
-            _session_names.pop(name, None)
+    with _session_names_lock:
+        for sid in list(_session_names):
+            p = _safe_path(f'{sid}_input.3mf')
+            if p is None or not os.path.exists(p):
+                _session_names.pop(sid, None)
     t = Timer(interval, _schedule_cleanup, [interval])
     t.daemon = True          # don't prevent process exit
     t.start()
@@ -171,12 +178,10 @@ def analyze():
     if not file.filename.lower().endswith('.3mf'):
         return jsonify({'error': 'Only .3mf files are accepted'}), 400
 
-    # Store the original name (sanitised, without extension) for the download
-    raw_name = file.filename.rsplit('.', 1)[0] if '.' in file.filename else file.filename
-    safe_name = _werkzeug_secure(raw_name) or 'converted'
-
     session_id     = uuid.uuid4().hex          # 32 hex chars, full 128-bit entropy
-    _session_names[session_id] = safe_name
+    raw_name       = file.filename.rsplit('.', 1)[0] if '.' in file.filename else file.filename
+    with _session_names_lock:
+        _session_names[session_id] = _sanitize_download_name(raw_name)
     input_filename = f'{session_id}_input.3mf'
     filepath       = _safe_path(input_filename)
     if filepath is None:
@@ -263,46 +268,52 @@ def convert():
         with zipfile.ZipFile(input_path, 'r') as zin, \
              zipfile.ZipFile(output_path, 'w', compression=zipfile.ZIP_DEFLATED) as zout:
 
+            archive_names = zin.namelist()
+
             # ---- slice_info.config ----------------------------------------
-            xml_str = zin.read('Metadata/slice_info.config').decode('utf-8')
-            xml_str = re.sub(
-                r'key="printer_model_id" value="[^"]*"',
-                'key="printer_model_id" value="Snapmaker U1"',
-                xml_str,
-            )
-            root = ET.fromstring(xml_str)
+            if 'Metadata/slice_info.config' in archive_names:
+                xml_str = zin.read('Metadata/slice_info.config').decode('utf-8')
+                xml_str = re.sub(
+                    r'key="printer_model_id" value="[^"]*"',
+                    'key="printer_model_id" value="Snapmaker U1"',
+                    xml_str,
+                )
+                root = ET.fromstring(xml_str)
 
-            filaments_parent = root.find('.//plate') or root
+                filaments_parent = root.find('.//plate') or root
 
-            # Use direct children only so Element.remove() targets the right parent
-            existing_nodes = filaments_parent.findall('filament')
+                # Use direct children only so Element.remove() targets the right parent
+                existing_nodes = filaments_parent.findall('filament')
 
-            id_mapping: dict[str, str] = {}
-            new_id_counter = 1
+                id_mapping: dict[str, str] = {}
+                new_id_counter = 1
 
-            for node in list(existing_nodes):
-                old_id = node.get('id')
-                if old_id not in user_colors:
-                    filaments_parent.remove(node)
-                else:
-                    conf = user_colors[old_id]
-                    id_mapping[old_id] = str(new_id_counter)
-                    node.set('id',    str(new_id_counter))
-                    node.set('color', conf['color'])
-                    node.set('type',  conf['type'])
+                for node in list(existing_nodes):
+                    old_id = node.get('id')
+                    if old_id not in user_colors:
+                        filaments_parent.remove(node)
+                    else:
+                        conf = user_colors[old_id]
+                        id_mapping[old_id] = str(new_id_counter)
+                        node.set('id',    str(new_id_counter))
+                        node.set('color', conf['color'])
+                        node.set('type',  conf['type'])
+                        new_id_counter += 1
+
+                # Pad to TARGET_FILAMENTS with dummy white-PLA entries
+                while new_id_counter <= TARGET_FILAMENTS:
+                    dummy = ET.SubElement(filaments_parent, 'filament')
+                    dummy.set('id',     str(new_id_counter))
+                    dummy.set('type',   'PLA')
+                    dummy.set('color',  '#FFFFFFFF')
+                    dummy.set('used_m', '0')
+                    dummy.set('used_g', '0')
                     new_id_counter += 1
 
-            # Pad to TARGET_FILAMENTS with dummy white-PLA entries
-            while new_id_counter <= TARGET_FILAMENTS:
-                dummy = ET.SubElement(filaments_parent, 'filament')
-                dummy.set('id',     str(new_id_counter))
-                dummy.set('type',   'PLA')
-                dummy.set('color',  '#FFFFFFFF')
-                dummy.set('used_m', '0')
-                dummy.set('used_g', '0')
-                new_id_counter += 1
-
-            modified_slice_info = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+                modified_slice_info = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+            else:
+                modified_slice_info = None
+                id_mapping = {str(i + 1): str(i + 1) for i in range(len(original_filaments))}
 
             # ---- model_settings.config ------------------------------------
             model_root = ET.fromstring(
@@ -364,16 +375,18 @@ def convert():
 
                 if item.filename == 'Metadata/project_settings.config':
                     zout.writestr(item, combined_bytes)
-                elif item.filename == 'Metadata/slice_info.config':
+                elif item.filename == 'Metadata/slice_info.config' and modified_slice_info is not None:
                     zout.writestr(item, modified_slice_info)
                 elif item.filename == 'Metadata/model_settings.config':
                     zout.writestr(item, modified_model_settings)
                 else:
                     zout.writestr(item, zin.read(item.filename))
 
+        with _session_names_lock:
+            original_name = _session_names.get(session_id, 'converted')
         return jsonify({
-            'download_url': f'/download/{session_id}_U1_Ready.3mf',
-            'download_name': f'{_session_names.get(session_id, "converted")}-U1.3mf',
+            'download_url':  f'/download/{session_id}_U1_Ready.3mf',
+            'download_name': f'{original_name}-U1.3mf',
         })
 
     except Exception as e:
@@ -396,8 +409,9 @@ def download_file(filename: str):
         return jsonify({'error': 'File not found'}), 404
     # Use original filename if available
     session_id = filename[:32]
-    download_name = f'{_session_names.get(session_id, "converted")}-U1.3mf'
-    return send_file(filepath, as_attachment=True, download_name=download_name)
+    with _session_names_lock:
+        original_name = _session_names.get(session_id, 'converted')
+    return send_file(filepath, as_attachment=True, download_name=f'{original_name}-U1.3mf')
 
 
 if __name__ == '__main__':
