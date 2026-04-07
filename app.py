@@ -8,7 +8,6 @@ import logging
 import posixpath
 import xml.etree.ElementTree as ET
 from threading import Timer
-from werkzeug.utils import secure_filename as _werkzeug_secure
 from flask import Flask, render_template, request, send_file, jsonify
 from werkzeug.exceptions import RequestEntityTooLarge
 
@@ -37,8 +36,15 @@ except OSError as e:
 _SESSION_RE = re.compile(r'^[0-9a-f]{32}$')
 _COLOR_RE   = re.compile(r'^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$')
 
-# Maps session_id -> original filename (without .3mf extension)
+# Maps session_id -> original filename stem (for download naming)
 _session_names: dict[str, str] = {}
+
+
+def _sanitize_download_name(name: str) -> str:
+    """Remove characters invalid in filenames while preserving non-ASCII."""
+    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', name).strip()
+    return cleaned or 'converted'
+
 
 # ---------------------------------------------------------------------------
 # Filament profiles (loaded once at startup)
@@ -80,10 +86,10 @@ def cleanup_old_files() -> None:
 def _schedule_cleanup(interval: int = 3600) -> None:
     cleanup_old_files()
     # Also purge stale entries from _session_names
-    for name in list(_session_names):
-        path = _safe_path(f'{name}_input.3mf')
+    for sid in list(_session_names):
+        path = _safe_path(f'{sid}_input.3mf')
         if path is None or not os.path.exists(path):
-            _session_names.pop(name, None)
+            _session_names.pop(sid, None)
     t = Timer(interval, _schedule_cleanup, [interval])
     t.daemon = True          # don't prevent process exit
     t.start()
@@ -171,12 +177,9 @@ def analyze():
     if not file.filename.lower().endswith('.3mf'):
         return jsonify({'error': 'Only .3mf files are accepted'}), 400
 
-    # Store the original name (sanitised, without extension) for the download
-    raw_name = file.filename.rsplit('.', 1)[0] if '.' in file.filename else file.filename
-    safe_name = _werkzeug_secure(raw_name) or 'converted'
-
     session_id     = uuid.uuid4().hex          # 32 hex chars, full 128-bit entropy
-    _session_names[session_id] = safe_name
+    raw_name = file.filename.rsplit('.', 1)[0] if '.' in file.filename else file.filename
+    _session_names[session_id] = _sanitize_download_name(raw_name)
     input_filename = f'{session_id}_input.3mf'
     filepath       = _safe_path(input_filename)
     if filepath is None:
@@ -395,9 +398,9 @@ def download_file(filename: str):
     if filepath is None or not os.path.exists(filepath):
         return jsonify({'error': 'File not found'}), 404
     # Use original filename if available
-    session_id = filename[:32]
-    download_name = f'{_session_names.get(session_id, "converted")}-U1.3mf'
-    return send_file(filepath, as_attachment=True, download_name=download_name)
+    session_id    = filename[:32]
+    original_name = _session_names.get(session_id, 'converted')
+    return send_file(filepath, as_attachment=True, download_name=f'{original_name}-U1.3mf')
 
 
 if __name__ == '__main__':
