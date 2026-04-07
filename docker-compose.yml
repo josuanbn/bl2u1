@@ -1,0 +1,16 @@
+services:
+  bl2u1:
+    build: .
+    container_name: bl2u1
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - uploads:/app/uploads
+      - inventory:/app/inventory
+    environment:
+      - FLASK_DEBUG=false
+
+volumes:
+  uploads:
+  inventory:
