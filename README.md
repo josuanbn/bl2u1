@@ -47,6 +47,13 @@ python app.py
 
 The application will be available at `http://localhost:8080`
 
+### Running the tests
+
+```bash
+pip install flask
+python -m unittest discover tests
+```
+
 ### Project Structure
 
 ```
@@ -74,7 +81,7 @@ The converter performs the following transformations:
 
 1. **Printer Profile**: Changes printer settings from Bambu Lab to Snapmaker U1
 2. **Filament Mapping**: Remaps filament types to U1 compatible profiles
-3. **Color Preservation**: Maintains all color painting data from the original file
+3. **Color Preservation**: The filaments you keep become extruders 1-4 in palette order, and the color painting follows them: every painted triangle (`paint_color`), every part/object extruder and per-object filament setting, and every layer-range extruder is renumbered to match. This works for projects saved without slicing too. A filament the model is painted with or assigned to can't be dropped (its color would land on another extruder): merge colors in Bambu Studio first. When a file has more than 4 filaments, the ones the model actually uses are pre-selected.
 4. **Support Detection**: Checks `different_settings_to_system` for `enable_support` and uses the appropriate template
 5. **Filament Padding**: Ensures 4 filaments are always configured (fills empty slots with white PLA)
 
