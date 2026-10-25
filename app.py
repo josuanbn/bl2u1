@@ -12,6 +12,8 @@ from werkzeug.utils import secure_filename as _werkzeug_secure
 from flask import Flask, render_template, request, send_file, jsonify
 from werkzeug.exceptions import RequestEntityTooLarge
 
+import paint
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,13 @@ except OSError as e:
 
 _SESSION_RE = re.compile(r'^[0-9a-f]{32}$')
 _COLOR_RE   = re.compile(r'^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$')
+
+# Per-triangle color painting in the mesh files, and the filament numbers in
+# model_settings.config: part/object extruders, and per-object settings like
+# support_filament. 0 means "the default" and never moves.
+_PAINT_RE          = re.compile(rb'( paint_color=")([0-9A-Fa-f]+)(")')
+_FILAMENT_KEY_RE   = re.compile(r'^(extruder|[a-z_]+_filament)$')
+_LAYER_EXTRUDER_RE = re.compile(r'(<option opt_key="extruder">)(\d+)(</option>)')
 
 # Maps session_id -> original filename (without .3mf extension)
 _session_names: dict[str, str] = {}
@@ -137,6 +146,25 @@ def parse_bambu_filaments(filepath: str) -> list[dict]:
     return filaments
 
 
+def used_filament_ids(filepath: str) -> set[str]:
+    """Filament ids the model prints with: painted on a triangle, or assigned to a part, object or layer range."""
+    used: set[str] = set()
+    with zipfile.ZipFile(filepath, 'r') as z:
+        names = z.namelist()
+        for name in names:
+            if name.lower().endswith('.model'):
+                for code in set(m.group(2) for m in _PAINT_RE.finditer(z.read(name))):
+                    used |= {str(s) for s in paint.states(code.decode()) if s}
+        if 'Metadata/model_settings.config' in names:
+            root = ET.fromstring(z.read('Metadata/model_settings.config').decode('utf-8'))
+            used |= {m.get('value') for m in root.iter('metadata')
+                     if _FILAMENT_KEY_RE.match(m.get('key') or '') and m.get('value') not in (None, '', '0')}
+        if 'Metadata/layer_config_ranges.xml' in names:
+            used |= {m.group(2) for m in _LAYER_EXTRUDER_RE.finditer(
+                z.read('Metadata/layer_config_ranges.xml').decode('utf-8')) if m.group(2) != '0'}
+    return used or {'1'}  # nothing painted or assigned: Bambu prints it all with filament 1
+
+
 def _safe_path(filename: str) -> str | None:
     safe_dir  = os.path.realpath(UPLOAD_FOLDER)
     candidate = os.path.realpath(os.path.join(safe_dir, filename))
@@ -192,6 +220,13 @@ def analyze():
         return jsonify({'error': 'Uploaded file is not a valid 3MF/ZIP archive'}), 400
 
     filaments = parse_bambu_filaments(filepath)
+    try:
+        used = used_filament_ids(filepath)
+    except Exception as e:
+        logger.error("Could not read filament usage from %s: %s", filepath, e)
+        used = {f['id'] for f in filaments}
+    for fil in filaments:
+        fil['used'] = fil['id'] in used
     return jsonify({'session_id': session_id, 'filaments': filaments})
 
 
@@ -244,6 +279,30 @@ def convert():
         logger.error("Could not read project settings [%s]: %s", session_id, e)
         return jsonify({'error': 'Could not read project settings from the uploaded file'}), 500
 
+    # Kept filaments, in palette order, become extruders 1..N. Built from the
+    # palette, not slice_info.config: a project saved without slicing has no
+    # <filament> nodes there, and nothing would be renumbered.
+    kept       = [f for f in original_filaments if f['id'] in user_colors]
+    id_mapping = {f['id']: str(n) for n, f in enumerate(kept, start=1)}
+    if len(kept) > TARGET_FILAMENTS:
+        return jsonify({'error': f'Select at most {TARGET_FILAMENTS} filaments for the U1.'}), 400
+
+    # A filament the model paints or assigns must be kept, or its color would
+    # land on whatever extruder now has its old number.
+    try:
+        used = used_filament_ids(input_path)
+    except Exception as e:
+        logger.error("Could not read filament usage [%s]: %s", session_id, e)
+        return jsonify({'error': 'Could not read the color painting from the uploaded file'}), 400
+    dropped = sorted(used - set(id_mapping), key=int)
+    if dropped:
+        names = ', '.join(f'Filament {i}' for i in dropped)
+        return jsonify({'error': f'{names} {"is" if len(dropped) == 1 else "are"} painted on or assigned to '
+                                 f'the model but not selected. Select {"it" if len(dropped) == 1 else "them"}, '
+                                 f'or merge those colors in Bambu Studio first.'}), 400
+    paint_mapping = {int(old): int(new) for old, new in id_mapping.items()}
+    renumber      = any(old != new for old, new in id_mapping.items())
+
     diff        = orig_settings.get('different_settings_to_system', [])
     has_support = any(isinstance(s, str) and 'enable_support' in s for s in diff)
     template    = 'u1_template_supports.3mf' if has_support else 'u1_template.3mf'
@@ -272,25 +331,28 @@ def convert():
             )
             root = ET.fromstring(xml_str)
 
-            filaments_parent = root.find('.//plate') or root
+            # An Element with no children is falsy, so `find(...) or root` would
+            # skip an empty <plate>: compare with None.
+            plate = root.find('.//plate')
+            filaments_parent = plate if plate is not None else root
 
-            # Use direct children only so Element.remove() targets the right parent
-            existing_nodes = filaments_parent.findall('filament')
+            # Rebuild the filament table from the kept filaments, reusing a
+            # sliced project's existing node (and its usage figures) where there
+            # is one. Use direct children only so Element.remove() targets the right parent.
+            existing_nodes = {node.get('id'): node for node in filaments_parent.findall('filament')}
+            for node in existing_nodes.values():
+                filaments_parent.remove(node)
 
-            id_mapping: dict[str, str] = {}
-            new_id_counter = 1
-
-            for node in list(existing_nodes):
-                old_id = node.get('id')
-                if old_id not in user_colors:
-                    filaments_parent.remove(node)
-                else:
-                    conf = user_colors[old_id]
-                    id_mapping[old_id] = str(new_id_counter)
-                    node.set('id',    str(new_id_counter))
-                    node.set('color', conf['color'])
-                    node.set('type',  conf['type'])
-                    new_id_counter += 1
+            for fil in kept:
+                conf = user_colors[fil['id']]
+                node = existing_nodes.get(fil['id'])
+                if node is None:
+                    node = ET.Element('filament', {'used_m': '0', 'used_g': '0'})
+                node.set('id',    id_mapping[fil['id']])
+                node.set('color', conf['color'])
+                node.set('type',  conf['type'])
+                filaments_parent.append(node)
+            new_id_counter = len(kept) + 1
 
             # Pad to TARGET_FILAMENTS with dummy white-PLA entries
             while new_id_counter <= TARGET_FILAMENTS:
@@ -308,9 +370,9 @@ def convert():
             model_root = ET.fromstring(
                 zin.read('Metadata/model_settings.config').decode('utf-8')
             )
-            for meta in model_root.findall('.//metadata[@key="extruder"]'):
+            for meta in model_root.iter('metadata'):
                 old_ext = meta.get('value')
-                if old_ext in id_mapping:
+                if _FILAMENT_KEY_RE.match(meta.get('key') or '') and old_ext in id_mapping:
                     meta.set('value', id_mapping[old_ext])
 
             modified_model_settings = ET.tostring(
@@ -355,6 +417,15 @@ def convert():
 
             combined_bytes = json.dumps(combined, indent=4, ensure_ascii=False).encode('utf-8')
 
+            # ---- color painting: every paint string follows its filament ----
+            recoded: dict[bytes, bytes] = {}
+
+            def recode(m: re.Match) -> bytes:
+                code = m.group(2)
+                if code not in recoded:
+                    recoded[code] = paint.remap(code.decode(), paint_mapping).encode()
+                return m.group(1) + recoded[code] + m.group(3)
+
             # ---- Copy all members, sanitising paths (Zip Slip defence) ----
             for item in zin.infolist():
                 safe_name = posixpath.normpath(item.filename).lstrip('/')
@@ -368,6 +439,12 @@ def convert():
                     zout.writestr(item, modified_slice_info)
                 elif item.filename == 'Metadata/model_settings.config':
                     zout.writestr(item, modified_model_settings)
+                elif renumber and item.filename.lower().endswith('.model'):
+                    zout.writestr(item, _PAINT_RE.sub(recode, zin.read(item.filename)))
+                elif renumber and item.filename == 'Metadata/layer_config_ranges.xml':
+                    zout.writestr(item, _LAYER_EXTRUDER_RE.sub(
+                        lambda m: m.group(1) + id_mapping.get(m.group(2), m.group(2)) + m.group(3),
+                        zin.read(item.filename).decode('utf-8')).encode('utf-8'))
                 else:
                     zout.writestr(item, zin.read(item.filename))
 

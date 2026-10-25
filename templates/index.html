@@ -307,9 +307,11 @@
             const counter = document.getElementById('selection-counter');
             const hint    = document.getElementById('filament-hint');
 
+            const usedCount = filaments.filter(f => f.used).length;
             if (needsSelection) {
-                document.getElementById('selection-warning-text').textContent =
-                    `This file has ${filaments.length} filaments. Select up to ${MAX_FILAMENTS} for the U1.`;
+                document.getElementById('selection-warning-text').textContent = usedCount > MAX_FILAMENTS
+                    ? `The model is painted with ${usedCount} filaments; the U1 has ${MAX_FILAMENTS}. Merge colors in Bambu Studio first.`
+                    : `This file has ${filaments.length} filaments and the model uses ${usedCount} of them (already selected). Select up to ${MAX_FILAMENTS} for the U1.`;
                 warning.classList.remove('hidden');
                 counter.classList.remove('hidden');
                 hint.textContent = 'Check the filaments you want to keep, then configure their U1 mapping.';
@@ -328,8 +330,9 @@
                 ).join('');
 
                 const checkboxHtml = needsSelection
-                    ? `<input type="checkbox" class="filament-check w-5 h-5 rounded border-slate-500 bg-slate-600 text-cyan-500 focus:ring-cyan-500 cursor-pointer flex-shrink-0" data-fil-id="${fil.id}" aria-label="Select filament ${index + 1}">`
+                    ? `<input type="checkbox" class="filament-check w-5 h-5 rounded border-slate-500 bg-slate-600 text-cyan-500 focus:ring-cyan-500 cursor-pointer flex-shrink-0" data-fil-id="${fil.id}" aria-label="Select filament ${index + 1}"${fil.used ? ' checked' : ''}>`
                     : '';
+                const usage = fil.used === false ? ' · not used by the model' : '';
 
                 const row = document.createElement('div');
                 row.className = 'bg-slate-700 p-4 rounded flex items-center justify-between gap-3';
@@ -341,7 +344,7 @@
                              style="background-color: ${fil.color}"></div>
                         <div class="min-w-0">
                             <p class="font-bold text-white">Filament ${index + 1}</p>
-                            <p class="text-xs text-gray-400">Original: ${fil.type || 'Unknown'}</p>
+                            <p class="text-xs text-gray-400">Original: ${fil.type || 'Unknown'}${usage}</p>
                         </div>
                     </div>
                     <i class="fa-solid fa-arrow-right text-gray-500 flex-shrink-0"></i>
